@@ -50,7 +50,7 @@ function buildDateFilter(period, from, to, params) {
     return conds.join(' AND ');
   }
   // Today
-  if (period === 'day')
+  if (period === 'today' || period === 'day')
     return `date = CURRENT_DATE`;
   // Current calendar week (Monday to Sunday)
   if (period === 'week')
@@ -215,32 +215,177 @@ app.get('/api/projects', (req, res) => {
 //  COMPANY EXPENSES
 // ============================================================
 
+// ── Overview KPIs  GET /api/expenses/kpis?period=year ────────
+app.get('/api/expenses/kpis', async (req, res) => {
+  try {
+    const params = [];
+    const dateF  = buildDateFilter(req.query.period || 'year', '', '', params);
+    const where  = dateF ? `WHERE ${dateF}` : '';
+    const result = await q(`
+      SELECT
+        COALESCE(SUM(amount), 0)                                        AS grand_total,
+        COALESCE(SUM(amount) FILTER (WHERE type = 'expenses'),  0)      AS expenses_total,
+        COALESCE(SUM(amount) FILTER (WHERE type = 'purchases'), 0)      AS purchases_total,
+        COALESCE(SUM(amount) FILTER (WHERE type = 'overhead'),  0)      AS overhead_total
+      FROM company_expenses ${where}
+    `, params);
+    const row = result.rows[0];
+    res.json({
+      grand_total:     Number(row.grand_total),
+      expenses_total:  Number(row.expenses_total),
+      purchases_total: Number(row.purchases_total),
+      overhead_total:  Number(row.overhead_total),
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Chart data  GET /api/expenses/monthly?period=year ────────
+app.get('/api/expenses/monthly', async (req, res) => {
+  try {
+    const period = req.query.period || 'year';
+    const params = [];
+    const dateF  = buildDateFilter(period, '', '', params);
+    const where  = dateF ? `WHERE ${dateF}` : '';
+
+    // For today: group by hour; for week: group by day; otherwise group by month
+    let selectExpr, groupExpr, orderExpr;
+    if (period === 'today' || period === 'day') {
+      selectExpr = `TO_CHAR(DATE_TRUNC('hour', created_at), 'HH12 AM') AS month_label`;
+      groupExpr  = `DATE_TRUNC('hour', created_at)`;
+      orderExpr  = `DATE_TRUNC('hour', created_at)`;
+    } else if (period === 'week') {
+      selectExpr = `TO_CHAR(date, 'Dy DD Mon') AS month_label`;
+      groupExpr  = `date`;
+      orderExpr  = `date`;
+    } else {
+      selectExpr = `TRIM(TO_CHAR(DATE_TRUNC('month', date), 'Month')) AS month_label`;
+      groupExpr  = `DATE_TRUNC('month', date)`;
+      orderExpr  = `DATE_TRUNC('month', date)`;
+    }
+
+    const result = await q(`
+      SELECT ${selectExpr}, SUM(amount) AS total
+      FROM company_expenses ${where}
+      GROUP BY ${groupExpr}
+      ORDER BY ${orderExpr}
+    `, params);
+    res.json(result.rows.map(r => ({ ...r, total: Number(r.total) })));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Recent records table (Overview tab)
+//    GET /api/expenses/recent?period=year&cat=&status=&search= ─
+app.get('/api/expenses/recent', async (req, res) => {
+  try {
+    const { period = 'year', cat = '', status = '', search = '' } = req.query;
+    const params = [];
+    const dateF  = buildDateFilter(period, '', '', params);
+    const conds  = dateF ? [dateF] : [];
+
+    if (cat)    { params.push(cat.toLowerCase());    conds.push(`type = $${params.length}`); }
+    if (status) { params.push(status.toLowerCase()); conds.push(`status = $${params.length}`); }
+    if (search) {
+      params.push(`%${search}%`);
+      conds.push(`(description ILIKE $${params.length} OR category ILIKE $${params.length})`);
+    }
+
+    const where  = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
+    // Show 10 by default; expand to 50 when any filter is actively applied
+    const limit = (cat || status || search) ? 50 : 10;
+    const result = await q(`
+      SELECT id, type, date, category, description, amount, status, vendor
+      FROM company_expenses ${where}
+      ORDER BY date DESC LIMIT ${limit}
+    `, params);
+    res.json(result.rows.map(r => ({ ...r, amount: Number(r.amount) })));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Sub-panel KPIs  GET /api/expenses/sub-kpis?type=expenses ─
+app.get('/api/expenses/sub-kpis', async (req, res) => {
+  try {
+    const type   = req.query.type || 'expenses';
+    const result = await q(`
+      SELECT
+        COALESCE(SUM(amount), 0)                                      AS total,
+        COALESCE(SUM(amount) FILTER (WHERE status = 'paid'),    0)    AS paid,
+        COALESCE(SUM(amount) FILTER (WHERE status = 'unpaid'),  0)    AS unpaid,
+        COALESCE(SUM(amount) FILTER (WHERE status = 'pending'), 0)    AS pending
+      FROM company_expenses WHERE type = $1
+    `, [type]);
+    const row = result.rows[0];
+    res.json({
+      total:   Number(row.total),
+      paid:    Number(row.paid),
+      unpaid:  Number(row.unpaid),
+      pending: Number(row.pending),
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Sub-panel list  GET /api/expenses/list?type=expenses&cat=&status=&search= ─
+app.get('/api/expenses/list', async (req, res) => {
+  try {
+    const { type = 'expenses', cat = '', status = '', search = '' } = req.query;
+    const params = [type];
+    const conds  = ['type = $1'];
+
+    if (cat)    { params.push(cat);          conds.push(`category = $${params.length}`); }
+    if (status) { params.push(status);       conds.push(`status = $${params.length}`); }
+    if (search) {
+      params.push(`%${search}%`);
+      conds.push(`(description ILIKE $${params.length} OR category ILIKE $${params.length})`);
+    }
+
+    const result = await q(`
+      SELECT id, type, date, category, description, vendor, amount, status
+      FROM company_expenses WHERE ${conds.join(' AND ')}
+      ORDER BY date DESC
+    `, params);
+    res.json(result.rows.map(r => ({ ...r, amount: Number(r.amount) })));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Legacy list  GET /api/expenses?search= ───────────────────
 app.get('/api/expenses', async (req, res) => {
   try {
     const { search = '' } = req.query;
     const params = search ? [`%${search}%`] : [];
-    const where = search ? `WHERE description ILIKE $1 OR category ILIKE $1 OR vendor ILIKE $1` : '';
+    const where  = search
+      ? `WHERE description ILIKE $1 OR category ILIKE $1 OR COALESCE(vendor,'') ILIKE $1`
+      : '';
     const result = await q(`SELECT * FROM company_expenses ${where} ORDER BY date DESC`, params);
-    res.json(result.rows);
+    res.json(result.rows.map(r => ({ ...r, amount: Number(r.amount) })));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── Add  POST /api/expenses ───────────────────────────────────
 app.post('/api/expenses', async (req, res) => {
   try {
-    const { date, desc, cat, vendor, amount, status } = req.body;
-    const result = await q(`INSERT INTO company_expenses (date,description,category,vendor,amount,status) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`, [date, desc, cat, vendor, amount, status]);
+    const { date, desc, cat, vendor, amount, status, type } = req.body;
+    const result = await q(`
+      INSERT INTO company_expenses (type, date, category, description, vendor, amount, status)
+      VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *
+    `, [type || 'expenses', date, cat, desc, vendor || null, amount, status || 'pending']);
     res.json(result.rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── Edit  PUT /api/expenses/:id ───────────────────────────────
 app.put('/api/expenses/:id', async (req, res) => {
   try {
-    const { date, desc, cat, vendor, amount, status } = req.body;
-    const result = await q(`UPDATE company_expenses SET date=$1,description=$2,category=$3,vendor=$4,amount=$5,status=$6 WHERE id=$7 RETURNING *`, [date, desc, cat, vendor, amount, status, req.params.id]);
+    const { date, desc, cat, vendor, amount, status, type } = req.body;
+    const result = await q(`
+      UPDATE company_expenses
+      SET type=$1, date=$2, category=$3, description=$4, vendor=$5, amount=$6, status=$7, updated_at=NOW()
+      WHERE id=$8 RETURNING *
+    `, [type || 'expenses', date, cat, desc, vendor || null, amount, status, req.params.id]);
+    if (!result.rows.length) return res.status(404).json({ error: 'Not found' });
     res.json(result.rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── Delete  DELETE /api/expenses/:id ─────────────────────────
 app.delete('/api/expenses/:id', async (req, res) => {
   try {
     await q(`DELETE FROM company_expenses WHERE id=$1`, [req.params.id]);
@@ -376,6 +521,156 @@ app.get('/api/report/kpis', async (req, res) => {
         (SELECT COALESCE(SUM(amount_collected),0) FROM collections      WHERE EXTRACT(YEAR FROM date)=EXTRACT(YEAR FROM NOW())) AS total_collections
     `);
     res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ============================================================
+//  EMPLOYEE
+// ============================================================
+
+function empSearchWhere(search, fields, params) {
+  if (!search) return '';
+  params.push(`%${search}%`);
+  const n = params.length;
+  return `AND (${fields.map(f => `${f} ILIKE $${n}`).join(' OR ')})`;
+}
+
+// ── REIMBURSE ─────────────────────────────────────────────────
+
+app.get('/api/employee/reimburse', async (req, res) => {
+  try {
+    const { search = '' } = req.query;
+    const params = [];
+    const sw = empSearchWhere(search, ['employee_name', 'description', 'role::text'], params);
+    const result = await q(
+      `SELECT id, employee_name, role, request_date, description, amount, status, comment
+       FROM reimburse WHERE 1=1 ${sw} ORDER BY request_date DESC`, params
+    );
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/employee/reimburse/:id', async (req, res) => {
+  try {
+    const result = await q(`SELECT * FROM reimburse WHERE id=$1`, [req.params.id]);
+    if (!result.rows.length) return res.status(404).json({ error: 'Not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Finance: Approve / Decline  +  optional comment (can send just comment too)
+app.patch('/api/employee/reimburse/:id/action', async (req, res) => {
+  try {
+    const { status, comment } = req.body;
+    const sets = [], params = [];
+    if (status  !== undefined) { params.push(status);  sets.push(`status=$${params.length}::request_status`); }
+    if (comment !== undefined) { params.push(comment); sets.push(`comment=COALESCE($${params.length}, comment)`); }
+    if (!sets.length) return res.status(400).json({ error: 'Nothing to update' });
+    params.push(req.params.id);
+    const result = await q(
+      `UPDATE reimburse SET ${sets.join(',')}, updated_at=NOW() WHERE id=$${params.length} RETURNING *`,
+      params
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── BUDGET REQUESTS ───────────────────────────────────────────
+
+app.get('/api/employee/budget', async (req, res) => {
+  try {
+    const { search = '' } = req.query;
+    const params = [];
+    const sw = empSearchWhere(search, ['employee_name', 'description', 'role::text'], params);
+    const result = await q(
+      `SELECT id, employee_name, role, request_date, description, amount, status, comment
+       FROM budget_requests WHERE 1=1 ${sw} ORDER BY request_date DESC`, params
+    );
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/employee/budget/:id', async (req, res) => {
+  try {
+    const result = await q(`SELECT * FROM budget_requests WHERE id=$1`, [req.params.id]);
+    if (!result.rows.length) return res.status(404).json({ error: 'Not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Finance: Done (approve) / Decline  +  optional comment
+app.patch('/api/employee/budget/:id/action', async (req, res) => {
+  try {
+    const { status, comment } = req.body;
+    const sets = [], params = [];
+    if (status  !== undefined) { params.push(status);  sets.push(`status=$${params.length}::request_status`); }
+    if (comment !== undefined) { params.push(comment); sets.push(`comment=COALESCE($${params.length}, comment)`); }
+    if (!sets.length) return res.status(400).json({ error: 'Nothing to update' });
+    params.push(req.params.id);
+    const result = await q(
+      `UPDATE budget_requests SET ${sets.join(',')}, updated_at=NOW() WHERE id=$${params.length} RETURNING *`,
+      params
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── SALARY ADVANCES ───────────────────────────────────────────
+
+app.get('/api/employee/salary', async (req, res) => {
+  try {
+    const { search = '' } = req.query;
+    const params = [];
+    const sw = empSearchWhere(search, ['employee_name'], params);
+    const result = await q(
+      `SELECT id, employee_name, advance_amount, balance, advance_date, status
+       FROM salary_advances WHERE 1=1 ${sw} ORDER BY advance_date DESC`, params
+    );
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/employee/salary/:id', async (req, res) => {
+  try {
+    const result = await q(`SELECT * FROM salary_advances WHERE id=$1`, [req.params.id]);
+    if (!result.rows.length) return res.status(404).json({ error: 'Not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/employee/salary', async (req, res) => {
+  try {
+    const { employee_name, advance_amount, balance, advance_date, status } = req.body;
+    const result = await q(
+      `INSERT INTO salary_advances (employee_name, advance_amount, balance, advance_date, status)
+       VALUES ($1,$2,$3,$4,$5::request_status) RETURNING *`,
+      [employee_name, advance_amount, balance ?? 0, advance_date, status || 'Pending']
+    );
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/employee/salary/:id', async (req, res) => {
+  try {
+    const { employee_name, advance_amount, balance, advance_date, status } = req.body;
+    const result = await q(
+      `UPDATE salary_advances
+       SET employee_name=$1, advance_amount=$2, balance=$3, advance_date=$4,
+           status=$5::request_status, updated_at=NOW()
+       WHERE id=$6 RETURNING *`,
+      [employee_name, advance_amount, balance ?? 0, advance_date, status, req.params.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/employee/salary/:id', async (req, res) => {
+  try {
+    await q(`DELETE FROM salary_advances WHERE id=$1`, [req.params.id]);
+    res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

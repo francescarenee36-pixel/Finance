@@ -19,12 +19,13 @@ document.querySelectorAll(".menu li").forEach(item => {
     const text = this.querySelector("span")?.innerText?.trim() || this.innerText.trim();
     if (text === "Dashboard")                          loadDashboard();
     if (text === "Company Income")                     loadCompanyIncome();
-    if (text === "Company Expenses and Purchases")     loadCompanyExpenses();
-    if (text === "Project Expenses and Purchases")     loadProjectExpenses();
+    if (text === "Company Expenses")  loadCompanyExpenses();
+    if (text === "Project Expenses")  loadProjectExpenses();
     if (text === "Financial Report")                   loadFinancialReport();
     if (text === "Collections")                        loadCollections();
     if (text === "Letters")                            loadLetters();
     if (text === "Settings")                           loadSettings();
+    if (text === "Employee")                            loadEmployee();
   });
 });
 
@@ -323,7 +324,7 @@ function loadCompanyIncome() {
       </button>
       <!-- Period filter + custom range — Overview only -->
       <div id="incPeriodWrap" style="display:flex;align-items:center;gap:8px;">
-        <div class="inc-flt-wrap">
+        <div class="inc-flt-wrap" style="position:relative;z-index:9999;">
           <button class="inc-btn-flt" id="incFilterBtn">
             <i class="ri-equalizer-line"></i> Filter <i class="ri-arrow-down-s-line"></i>
           </button>
@@ -350,10 +351,11 @@ function loadCompanyIncome() {
     </div>
 
     <!-- Tabs -->
-    <div class="inc-tabs-row">
-      <div class="inc-tabs">
-        <button class="inc-tab active" id="incTabOv">Overview</button>
-        <button class="inc-tab"        id="incTabIn">Income</button>
+    <!-- Tabs -->
+    <div style="padding:6px 28px 0;background:transparent;">
+      <div style="display:inline-flex;background:white;border-radius:10px;padding:4px;gap:2px;box-shadow:0 2px 10px rgba(0,0,0,0.07);">
+        <button class="exp-tab active" id="incTabOv">Overview</button>
+        <button class="exp-tab"        id="incTabIn">Income</button>
       </div>
     </div>
 
@@ -390,7 +392,7 @@ function loadCompanyIncome() {
     </div>
 
     <!-- Panels -->
-    <div class="inc-body">
+    <div class="inc-body" style="position:relative;z-index:0;">
 
       <!-- OVERVIEW -->
       <div id="incPanelOv">
@@ -727,89 +729,616 @@ async function incConfirmDelete() {
 
 /* ================= COMPANY EXPENSES ================= */
 
-let expDeleteId = null;
+let expDeleteId  = null;
+let expActiveTab = "overview";   // overview | expenses | purchases | overhead
+let expBarChart  = null;
+let expPieChart  = null;
+let expFilterPeriod = "year";   // today|week|month|year
+let expFilterCat    = "";
+let expFilterStatus = "";
 
-function loadCompanyExpenses() {
-  mainContent.innerHTML = `
-    <div class="terminals-header">
-      <h2><i class="ri-shopping-cart-line"></i> Company Expenses and Purchases</h2>
-      <div class="terminals-actions">
-        <div class="search-box"><i class="ri-search-line"></i><input type="text" id="expSearch" placeholder="Search here…"></div>
-        <button class="tool-btn apply-btn" id="btnAddExpense"><i class="ri-add-line"></i> Add Expense</button>
-      </div>
-    </div>
-    <p style="color:#6b7280;font-size:13px;margin-bottom:18px;">Manage company-wide expenses and procurement</p>
-    <div class="table-card">
-      <div class="table-card-header"><span>Company Expenses and Purchases</span></div>
-      <div style="overflow-x:auto;">
-        <table style="width:100%;border-collapse:collapse;">
-          <thead style="background:#dbeafe;">
-            <tr>
-              ${["#","Date","Description","Category","Supplier / Vendor","Amount","Status","Actions"]
-                .map(h=>`<th style="padding:12px 16px;text-align:left;font-size:13px;font-weight:600;color:#1e3a6e;">${h}</th>`).join("")}
-            </tr>
-          </thead>
-          <tbody id="expTableBody"><tr><td colspan="8" style="text-align:center;padding:30px;color:#9ca3af;">Loading…</td></tr></tbody>
-        </table>
-      </div>
-    </div>`;
-  expRenderTable();
-  document.getElementById("btnAddExpense").addEventListener("click", expOpenAdd);
-  document.getElementById("expSearch").addEventListener("input", expRenderTable);
+/* ── destroy charts on tab change ── */
+function expDestroyCharts() {
+  if (expBarChart) { expBarChart.destroy(); expBarChart = null; }
+  if (expPieChart) { expPieChart.destroy(); expPieChart = null; }
 }
 
-async function expRenderTable() {
-  const q = document.getElementById("expSearch")?.value || "";
-  const tbody = document.getElementById("expTableBody");
-  if (!tbody) return;
-  try {
-    const rows = await api("GET", `/api/expenses?search=${encodeURIComponent(q)}`);
-    if (!rows.length) {
-      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:40px;color:#9ca3af;">No records found.</td></tr>`;
-      return;
-    }
-    tbody.innerHTML = rows.map((r, i) => `
-      <tr>
-        <td style="padding:12px 16px;">${i+1}</td>
-        <td style="padding:12px 16px;">${formatDate(r.date)}</td>
-        <td style="padding:12px 16px;">${r.description}</td>
-        <td style="padding:12px 16px;"><span class="badge medium">${r.category}</span></td>
-        <td style="padding:12px 16px;">${r.vendor}</td>
-        <td style="padding:12px 16px;font-weight:700;color:#dc2626;">${formatCurrency(r.amount)}</td>
-        <td style="padding:12px 16px;"><span class="badge ${r.status}">${capitalize(r.status)}</span></td>
-        <td style="padding:12px 16px;">
-          <div style="display:flex;gap:6px;">
-            <button class="inc-row-btn inc-btn-edit" onclick="expOpenEdit(${r.id},'${r.date}','${r.description}','${r.category}','${r.vendor}',${r.amount},'${r.status}')"><i class="ri-pencil-line"></i> Edit</button>
-            <button class="inc-row-btn inc-btn-del"  onclick="expOpenDelete(${r.id},'${r.description}',${r.amount})"><i class="ri-delete-bin-line"></i> Delete</button>
+function loadCompanyExpenses() {
+  expDestroyCharts();
+  expActiveTab    = "overview";
+  expFilterPeriod = "year";
+  expFilterCat    = "";
+  expFilterStatus = "";
+
+  mainContent.innerHTML = `
+  <div class="exp-page">
+
+    <!-- Header -->
+    <div class="inc-hdr" style="background:transparent;">
+      <div class="inc-av"><i class="ri-shopping-cart-line" style="font-size:22px;color:white;"></i></div>
+      <span class="inc-wb">Welcome back!</span>
+      <div class="inc-srch">
+        <i class="ri-search-line"></i>
+        <input type="text" placeholder="Search here" id="expSearchInput">
+      </div>
+      <button class="inc-bell"><i class="ri-notification-3-line"></i><span class="bdot"></span></button>
+    </div>
+
+    <!-- Filter button row (Overview only) -->
+    <div class="inc-act" id="expPeriodRow" style="position:relative;z-index:9999;">
+      <div style="position:relative;z-index:9999;" id="expFltWrap">
+        <button class="inc-btn-flt" id="expFltBtn">
+          <i class="ri-equalizer-line"></i> Filter <i class="ri-arrow-down-s-line"></i>
+        </button>
+        <div class="inc-flt-dd" id="expFltDd">
+          <div class="inc-flt-opt" id="expFopt-today">Today</div>
+          <div class="inc-flt-opt" id="expFopt-week">Week</div>
+          <div class="inc-flt-opt" id="expFopt-month">Month</div>
+          <div class="inc-flt-opt active" id="expFopt-year">Year</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tabs -->
+    <div style="padding:6px 28px 0;background:transparent;">
+      <div style="display:inline-flex;background:white;border-radius:10px;padding:4px;gap:2px;box-shadow:0 2px 10px rgba(0,0,0,0.07);">
+        <button class="exp-tab active" id="expTabOv"   onclick="expSwitchTab('overview')">Overview</button>
+        <button class="exp-tab"        id="expTabExp"  onclick="expSwitchTab('expenses')">Company Expenses</button>
+        <button class="exp-tab"        id="expTabPur"  onclick="expSwitchTab('purchases')">Purchases</button>
+        <button class="exp-tab"        id="expTabOvh"  onclick="expSwitchTab('overhead')">Overhead</button>
+      </div>
+    </div>
+
+    <!-- Body -->
+    <div class="exp-body">
+
+      <!-- ===== OVERVIEW PANEL ===== -->
+      <div id="expPanelOv">
+
+        <!-- KPI cards -->
+        <div class="exp-kpi-row" id="expKpiRow">
+          <div class="exp-kpi-card exp-kpi-blue">
+            <div class="exp-kpi-icon"><i class="ri-money-dollar-circle-line"></i></div>
+            <div><div class="exp-kpi-val" id="expKpiTotal">—</div><div class="exp-kpi-lbl">Grand Total</div></div>
           </div>
-        </td>
-      </tr>`).join("");
-  } catch (err) {
-    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:40px;color:#dc2626;">Error loading records.</td></tr>`;
+          <div class="exp-kpi-card exp-kpi-teal">
+            <div class="exp-kpi-icon"><i class="ri-bank-card-line"></i></div>
+            <div><div class="exp-kpi-val" id="expKpiExp">—</div><div class="exp-kpi-lbl">Company Expenses</div></div>
+          </div>
+          <div class="exp-kpi-card exp-kpi-cyan">
+            <div class="exp-kpi-icon"><i class="ri-shopping-cart-line"></i></div>
+            <div><div class="exp-kpi-val" id="expKpiPur">—</div><div class="exp-kpi-lbl">Company Purchase</div></div>
+          </div>
+          <div class="exp-kpi-card exp-kpi-indigo">
+            <div class="exp-kpi-icon"><i class="ri-building-line"></i></div>
+            <div><div class="exp-kpi-val" id="expKpiOvh">—</div><div class="exp-kpi-lbl">Overhead Expenses</div></div>
+          </div>
+        </div>
+
+        <!-- Charts row -->
+        <div class="exp-charts-row">
+          <div class="exp-chart-card">
+            <div class="inc-chart-title">Expenses per Month</div>
+            <canvas id="expBarChartCanvas" height="200"></canvas>
+          </div>
+          <div class="exp-chart-card">
+            <div class="inc-chart-title">Expenses Distribution</div>
+            <canvas id="expPieChartCanvas" height="200"></canvas>
+          </div>
+        </div>
+
+        <!-- Recent Financial Records table -->
+        <!-- Dropdowns are OUTSIDE inc-tbl-wrap so overflow:hidden never clips them -->
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-top:20px;margin-bottom:6px;flex-wrap:wrap;gap:8px;">
+          <span style="font-size:13px;font-weight:800;color:#1e3a6e;letter-spacing:1.5px;text-transform:uppercase;">Recent Financial Records</span>
+          <div style="display:flex;gap:8px;position:relative;z-index:9999;">
+            <!-- Category dropdown -->
+            <div style="position:relative;" id="expCatWrap">
+              <button class="exp-sub-dd-btn" id="expCatBtn">Category <i class="ri-arrow-down-s-line"></i></button>
+              <div class="exp-sub-dd" id="expCatDd">
+                <div class="inc-flt-opt active" onclick="expSetCat('')">All</div>
+                <div class="inc-flt-opt" onclick="expSetCat('expenses')">Expenses</div>
+                <div class="inc-flt-opt" onclick="expSetCat('purchases')">Purchases</div>
+                <div class="inc-flt-opt" onclick="expSetCat('overhead')">Overhead</div>
+              </div>
+            </div>
+            <!-- Status filter dropdown -->
+            <div style="position:relative;" id="expStsWrap">
+              <button class="exp-sub-dd-btn" id="expStsBtn">
+                <i class="ri-equalizer-line"></i> Filter <i class="ri-arrow-down-s-line"></i>
+              </button>
+              <div class="exp-sub-dd" id="expStsDd">
+                <div class="inc-flt-opt active" onclick="expSetStatus('')">All Status</div>
+                <div class="inc-flt-opt" onclick="expSetStatus('paid')">Paid</div>
+                <div class="inc-flt-opt" onclick="expSetStatus('unpaid')">Unpaid</div>
+                <div class="inc-flt-opt" onclick="expSetStatus('pending')">Pending</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="inc-tbl-wrap">
+          <div class="inc-tbl-banner">RECENT FINANCIAL RECORDS</div>
+          <table class="inc-tbl">
+            <thead><tr>
+              <th>Date</th><th>Category</th><th>Description</th><th>Amount</th><th>Status</th>
+            </tr></thead>
+            <tbody id="expRecentTbody"><tr><td colspan="5" class="inc-empty">Loading…</td></tr></tbody>
+          </table>
+        </div>
+
+      </div><!-- /expPanelOv -->
+
+      <!-- ===== EXPENSES / PURCHASES / OVERHEAD PANELS (shared layout) ===== -->
+      <div id="expPanelSub" style="display:none;">
+
+        <!-- Sub KPI row -->
+        <div class="exp-kpi-row" id="expSubKpiRow">
+          <div class="exp-kpi-card exp-kpi-blue">
+            <div class="exp-kpi-icon"><i class="ri-money-dollar-circle-line"></i></div>
+            <div><div class="exp-kpi-val" id="subKpiTotal">—</div><div class="exp-kpi-lbl">Total</div></div>
+          </div>
+          <div class="exp-kpi-card exp-kpi-teal">
+            <div class="exp-kpi-icon"><i class="ri-checkbox-circle-line"></i></div>
+            <div><div class="exp-kpi-val" id="subKpiPaid">—</div><div class="exp-kpi-lbl">Paid</div></div>
+          </div>
+          <div class="exp-kpi-card exp-kpi-cyan">
+            <div class="exp-kpi-icon"><i class="ri-close-circle-line"></i></div>
+            <div><div class="exp-kpi-val" id="subKpiUnpaid">—</div><div class="exp-kpi-lbl">Unpaid</div></div>
+          </div>
+          <div class="exp-kpi-card exp-kpi-indigo">
+            <div class="exp-kpi-icon"><i class="ri-time-line"></i></div>
+            <div><div class="exp-kpi-val" id="subKpiPending">—</div><div class="exp-kpi-lbl">Pending</div></div>
+          </div>
+        </div>
+
+        <!-- Table header with Add + filters -->
+        <div style="display:flex;align-items:center;justify-content:space-between;margin:20px 0 12px;flex-wrap:wrap;gap:10px;">
+          <h3 id="expSubTitle" style="font-size:20px;font-weight:800;color:#1e3a6e;"></h3>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;position:relative;z-index:500;">
+            <button class="inc-btn-add" id="expSubAddBtn" onclick="expOpenAdd()">
+              <i class="ri-add-line"></i> Add
+            </button>
+            <!-- All Categories dropdown -->
+            <div style="position:relative;" id="expSubCatWrap">
+              <button class="exp-sub-dd-btn" id="expSubCatBtn">All Categories <i class="ri-arrow-down-s-line"></i></button>
+              <div class="exp-sub-dd" id="expSubCatDd">
+                <div class="inc-flt-opt" onclick="expSubSetCat('')">All Categories</div>
+                <div class="inc-flt-opt" id="subCatOpt1"></div>
+                <div class="inc-flt-opt" id="subCatOpt2"></div>
+                <div class="inc-flt-opt" id="subCatOpt3"></div>
+              </div>
+            </div>
+            <!-- All Status dropdown -->
+            <div style="position:relative;" id="expSubStsWrap">
+              <button class="exp-sub-dd-btn" id="expSubStsBtn">All Status <i class="ri-arrow-down-s-line"></i></button>
+              <div class="exp-sub-dd" id="expSubStsDd">
+                <div class="inc-flt-opt" onclick="expSubSetStatus('')">All Status</div>
+                <div class="inc-flt-opt" onclick="expSubSetStatus('paid')">Paid</div>
+                <div class="inc-flt-opt" onclick="expSubSetStatus('unpaid')">Unpaid</div>
+                <div class="inc-flt-opt" onclick="expSubSetStatus('pending')">Pending</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sub-table -->
+        <div class="inc-tbl-wrap">
+          <table class="inc-tbl">
+            <thead><tr>
+              <th>Date</th><th>Category</th><th>Description</th><th>Amount</th><th>Status</th><th>Actions</th>
+            </tr></thead>
+            <tbody id="expSubTbody"><tr><td colspan="6" class="inc-empty">Loading…</td></tr></tbody>
+          </table>
+        </div>
+
+      </div><!-- /expPanelSub -->
+
+    </div><!-- /exp-body -->
+  </div><!-- /exp-page -->`;
+
+  // Wire events
+  document.getElementById("expFltBtn").addEventListener("click", e => {
+    e.stopPropagation();
+    document.getElementById("expFltDd").classList.toggle("show");
+  });
+  ["today","week","month","year"].forEach(p =>
+    document.getElementById("expFopt-"+p).addEventListener("click", () => expSetPeriod(p))
+  );
+  document.getElementById("expCatBtn").onclick = e => {
+    e.stopPropagation();
+    document.getElementById("expCatDd").classList.toggle("show");
+    document.getElementById("expStsDd").classList.remove("show");
+  };
+  document.getElementById("expStsBtn").onclick = e => {
+    e.stopPropagation();
+    document.getElementById("expStsDd").classList.toggle("show");
+    document.getElementById("expCatDd").classList.remove("show");
+  };
+  document.getElementById("expSearchInput").addEventListener("input", () => {
+    if (expActiveTab !== "overview") expRenderSubTable();
+    else expRenderRecentTable();
+  });
+  // Guard: only register the global close-handler once across page navigations
+  if (!window._expDropdownListenerRegistered) {
+    document.addEventListener("click", expCloseAllDropdowns);
+    window._expDropdownListenerRegistered = true;
+  }
+
+  expLoadOverview();
+}
+
+function expCloseAllDropdowns(e) {
+  // If the click was inside any dropdown wrapper, let the option's onclick run first
+  const wrappers = ["expFltWrap","expCatWrap","expStsWrap","expSubCatWrap","expSubStsWrap"];
+  if (wrappers.some(id => { const el = document.getElementById(id); return el && el.contains(e.target); }))
+    return;
+  ["expFltDd","expCatDd","expStsDd","expSubCatDd","expSubStsDd"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.remove("show");
+  });
+}
+
+function expSwitchTab(tab) {
+  expActiveTab = tab;
+  expDestroyCharts();
+  ["Ov","Exp","Pur","Ovh"].forEach(t => {
+    const btn = document.getElementById("expTab"+t);
+    if (btn) btn.classList.remove("active");
+  });
+  const map = { overview:"Ov", expenses:"Exp", purchases:"Pur", overhead:"Ovh" };
+  const activeBtn = document.getElementById("expTab"+map[tab]);
+  if (activeBtn) activeBtn.classList.add("active");
+
+  const isOv = tab === "overview";
+  document.getElementById("expPanelOv").style.display  = isOv ? "" : "none";
+  document.getElementById("expPanelSub").style.display = isOv ? "none" : "";
+  document.getElementById("expPeriodRow").style.display = isOv ? "flex" : "none";
+
+  if (isOv) {
+    expLoadOverview();
+  } else {
+    // Set sub-panel title + category options per tab
+    const cfg = {
+      expenses:  { title:"Company Expenses",  cats:["Salaries","Contractor Fees","Legal Fees","Utilities","Other"] },
+      purchases: { title:"Company Purchases", cats:["Equipment","Supplies","Materials","Software","Other"] },
+      overhead:  { title:"Overhead Expenses", cats:["Rent","Internet","Insurance","Depreciation","Other"] },
+    };
+    const c = cfg[tab];
+    document.getElementById("expSubTitle").textContent = c.title;
+    ["subCatOpt1","subCatOpt2","subCatOpt3"].forEach((id, i) => {
+      const el = document.getElementById(id);
+      if (el) { el.textContent = c.cats[i] || ""; el.onclick = () => expSubSetCat(c.cats[i]||""); }
+    });
+    // Wire sub-dropdowns with .onclick so repeated tab switches never stack listeners
+    document.getElementById("expSubCatBtn").onclick = e => {
+      e.stopPropagation();
+      document.getElementById("expSubCatDd").classList.toggle("show");
+      document.getElementById("expSubStsDd").classList.remove("show");
+    };
+    document.getElementById("expSubStsBtn").onclick = e => {
+      e.stopPropagation();
+      document.getElementById("expSubStsDd").classList.toggle("show");
+      document.getElementById("expSubCatDd").classList.remove("show");
+    };
+    expSubFilterCat    = "";
+    expSubFilterStatus = "";
+    expRenderSubTable();
+    expLoadSubKpis();
   }
 }
 
+/* ── Overview ── */
+async function expLoadOverview() {
+  try {
+    const kpis = await api("GET", `/api/expenses/kpis?period=${expFilterPeriod}`);
+    document.getElementById("expKpiTotal").textContent = formatCurrency(kpis.grand_total   || 0);
+    document.getElementById("expKpiExp").textContent   = formatCurrency(kpis.expenses_total || 0);
+    document.getElementById("expKpiPur").textContent   = formatCurrency(kpis.purchases_total|| 0);
+    document.getElementById("expKpiOvh").textContent   = formatCurrency(kpis.overhead_total || 0);
+  } catch { expSetFallbackKpis(); }
+  expRenderRecentTable();
+  expRenderBarChart();
+  expRenderPieChart();
+}
+
+function expSetFallbackKpis() {
+  ["expKpiTotal","expKpiExp","expKpiPur","expKpiOvh"].forEach(id => {
+    const e = document.getElementById(id); if (e) e.textContent = "₱0.00";
+  });
+}
+
+function expSetPeriod(p) {
+  expFilterPeriod = p;
+  ["today","week","month","year"].forEach(k => {
+    document.getElementById("expFopt-"+k)?.classList.remove("active");
+  });
+  document.getElementById("expFopt-"+p)?.classList.add("active");
+  document.getElementById("expFltDd").classList.remove("show");
+  // Update button label to reflect selected period
+  const periodLabels = { today:"Today", week:"Week", month:"Month", year:"Year" };
+  document.getElementById("expFltBtn").innerHTML =
+    '<i class="ri-equalizer-line"></i> ' + (periodLabels[p] || "Filter") + ' <i class="ri-arrow-down-s-line"></i>';
+  expDestroyCharts();
+  expLoadOverview();
+  showToast("Filtered by: " + capitalize(p), "info");
+}
+
+function expSetCat(cat) {
+  expFilterCat = cat;  // already lowercase from onclick values
+  const label = cat ? cat.charAt(0).toUpperCase() + cat.slice(1) : "Category";
+  document.getElementById("expCatBtn").innerHTML = label + ' <i class="ri-arrow-down-s-line"></i>';
+  document.querySelectorAll("#expCatDd .inc-flt-opt").forEach(el => el.classList.remove("active"));
+  const hit = [...document.querySelectorAll("#expCatDd .inc-flt-opt")]
+    .find(el => el.textContent.trim().toLowerCase() === (cat || "all"));
+  if (hit) hit.classList.add("active");
+  document.getElementById("expCatDd").classList.remove("show");
+  expRenderRecentTable();
+}
+function expSetStatus(s) {
+  expFilterStatus = s;  // paid | unpaid | pending | ""
+  const label = s ? s.charAt(0).toUpperCase() + s.slice(1) : "Filter";
+  document.getElementById("expStsBtn").innerHTML = '<i class="ri-equalizer-line"></i> ' + label + ' <i class="ri-arrow-down-s-line"></i>';
+  document.querySelectorAll("#expStsDd .inc-flt-opt").forEach(el => el.classList.remove("active"));
+  const hit = [...document.querySelectorAll("#expStsDd .inc-flt-opt")]
+    .find(el => el.textContent.trim().toLowerCase() === (s || "all status"));
+  if (hit) hit.classList.add("active");
+  document.getElementById("expStsDd").classList.remove("show");
+  expRenderRecentTable();
+}
+
+async function expRenderRecentTable() {
+  const tbody = document.getElementById("expRecentTbody");
+  if (!tbody) return;
+  const q = document.getElementById("expSearchInput")?.value || "";
+  try {
+    const rows = await api("GET", `/api/expenses/recent?period=${expFilterPeriod}&cat=${encodeURIComponent(expFilterCat)}&status=${encodeURIComponent(expFilterStatus)}&search=${encodeURIComponent(q)}`);
+    if (!rows.length) {
+      tbody.innerHTML = `<tr><td colspan="5" class="inc-empty">No records found.</td></tr>`; return;
+    }
+    tbody.innerHTML = rows.map(r => {
+      const sc = r.status==="paid"?"completed":r.status==="unpaid"?"pending":"progress";
+      return `<tr>
+        <td>${formatDate(r.date)}</td>
+        <td>${r.category}</td>
+        <td>${r.description}</td>
+        <td style="font-weight:700;color:#dc2626;">${formatCurrency(r.amount)}</td>
+        <td><span class="badge ${sc}" style="border-radius:20px;padding:5px 14px;">${capitalize(r.status)}</span></td>
+      </tr>`;
+    }).join("");
+  } catch {
+    tbody.innerHTML = expFallbackRecentRows();
+  }
+}
+
+function expFallbackRecentRows() {
+  const demo = [
+    { date:"2026-01-02", category:"Expenses",  description:"Satellite Service",    amount:120000, status:"pending" },
+    { date:"2026-01-02", category:"Expenses",  description:"Satellite Service",    amount:120000, status:"pending" },
+    { date:"2026-01-13", category:"Overhead",  description:"Equipment Setup",      amount:80000,  status:"paid"    },
+    { date:"2026-01-28", category:"Purchases", description:"Monthly Service Plan", amount:60000,  status:"paid"    },
+    { date:"2026-01-02", category:"Expenses",  description:"Satellite Service",    amount:120000, status:"pending" },
+    { date:"2026-01-13", category:"Overhead",  description:"Equipment Setup",      amount:80000,  status:"paid"    },
+    { date:"2026-01-28", category:"Purchases", description:"Monthly Service Plan", amount:60000,  status:"pending" },
+  ];
+  return demo.map(r => {
+    const sc = r.status==="paid"?"completed":r.status==="unpaid"?"pending":"progress";
+    return `<tr>
+      <td>${formatDate(r.date)}</td>
+      <td>${r.category}</td>
+      <td>${r.description}</td>
+      <td style="font-weight:700;color:#dc2626;">${formatCurrency(r.amount)}</td>
+      <td><span class="badge ${sc}" style="border-radius:20px;padding:5px 14px;">${capitalize(r.status)}</span></td>
+    </tr>`;
+  }).join("");
+}
+
+async function expRenderBarChart() {
+  const canvas = document.getElementById("expBarChartCanvas");
+  if (!canvas) return;
+  let labels = [], data = [];
+  try {
+    const rows = await api("GET", `/api/expenses/monthly?period=${expFilterPeriod}`);
+    labels = rows.map(r => r.month_label);
+    data   = rows.map(r => r.total);
+  } catch {
+    labels = ["January","February","March","April"];
+    data   = [19500, 43000, 13000, 29000];
+  }
+  // Update chart title to match the selected period
+  const chartTitles = { today:"Expenses Today (by Hour)", week:"Expenses This Week (by Day)", month:"Expenses This Month (by Day)", year:"Expenses per Month" };
+  const titleEl = canvas.closest(".exp-chart-card")?.querySelector(".inc-chart-title");
+  if (titleEl) titleEl.textContent = chartTitles[expFilterPeriod] || "Expenses per Month";
+
+  expBarChart = new Chart(canvas, {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [{
+        data,
+        backgroundColor: labels.map((_, i) => i % 2 === 0 ? "#4dd9c0" : "#29b6e0"),
+        borderRadius: 8,
+        borderSkipped: false,
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        y: { beginAtZero: true, grid: { color: "#e5e7eb" }, ticks: { callback: v => "₱"+v.toLocaleString() } },
+        x: { grid: { display: false } }
+      }
+    }
+  });
+}
+
+async function expRenderPieChart() {
+  const canvas = document.getElementById("expPieChartCanvas");
+  if (!canvas) return;
+  let labels = ["Expenses","Purchases","Overhead"], data = [60,29,11];
+  try {
+    const kpis = await api("GET", `/api/expenses/kpis?period=${expFilterPeriod}`);
+    const tot = (kpis.expenses_total||0) + (kpis.purchases_total||0) + (kpis.overhead_total||0);
+    if (tot > 0) {
+      data = [
+        Math.round((kpis.expenses_total  / tot) * 100),
+        Math.round((kpis.purchases_total / tot) * 100),
+        Math.round((kpis.overhead_total  / tot) * 100),
+      ];
+    }
+  } catch {}
+  expPieChart = new Chart(canvas, {
+    type: "doughnut",
+    data: {
+      labels,
+      datasets: [{
+        data,
+        backgroundColor: ["#29b6e0","#4dd9c0","#a5f3fc"],
+        borderWidth: 2,
+        borderColor: "#fff",
+      }]
+    },
+    options: {
+      responsive: true,
+      cutout: "55%",
+      plugins: {
+        legend: {
+          position: "right",
+          labels: { font: { size: 13 }, padding: 16,
+            generateLabels: chart => chart.data.labels.map((lbl, i) => ({
+              text: lbl + "\n" + chart.data.datasets[0].data[i] + "%",
+              fillStyle: chart.data.datasets[0].backgroundColor[i],
+              index: i,
+            }))
+          }
+        }
+      }
+    }
+  });
+}
+
+/* ── Sub-panel (Expenses / Purchases / Overhead tabs) ── */
+let expSubFilterCat    = "";
+let expSubFilterStatus = "";
+
+async function expLoadSubKpis() {
+  const type = expActiveTab; // expenses|purchases|overhead
+  try {
+    const kpis = await api("GET", `/api/expenses/sub-kpis?type=${type}`);
+    document.getElementById("subKpiTotal").textContent   = formatCurrency(kpis.total   || 0);
+    document.getElementById("subKpiPaid").textContent    = formatCurrency(kpis.paid    || 0);
+    document.getElementById("subKpiUnpaid").textContent  = formatCurrency(kpis.unpaid  || 0);
+    document.getElementById("subKpiPending").textContent = formatCurrency(kpis.pending || 0);
+  } catch {
+    ["subKpiTotal","subKpiPaid","subKpiUnpaid","subKpiPending"].forEach(id => {
+      const e = document.getElementById(id); if (e) e.textContent = "₱0.00";
+    });
+  }
+}
+
+async function expRenderSubTable() {
+  const tbody = document.getElementById("expSubTbody");
+  if (!tbody) return;
+  const q = document.getElementById("expSearchInput")?.value || "";
+  const type = expActiveTab;
+  try {
+    const rows = await api("GET", `/api/expenses/list?type=${type}&cat=${encodeURIComponent(expSubFilterCat)}&status=${encodeURIComponent(expSubFilterStatus)}&search=${encodeURIComponent(q)}`);
+    if (!rows.length) {
+      tbody.innerHTML = `<tr><td colspan="6" class="inc-empty">No records found.</td></tr>`; return;
+    }
+    tbody.innerHTML = rows.map(r => {
+      const sc = r.status==="paid"?"completed":r.status==="unpaid"?"pending":"progress";
+      return `<tr>
+        <td>${formatDate(r.date)}</td>
+        <td>${r.category}</td>
+        <td>${r.description}</td>
+        <td style="font-weight:700;color:#dc2626;">${formatCurrency(r.amount)}</td>
+        <td><span class="badge ${sc}" style="border-radius:20px;padding:5px 14px;">${capitalize(r.status)}</span></td>
+        <td>
+          <div style="display:flex;gap:6px;align-items:center;justify-content:center;">
+            <button style="width:32px;height:32px;border-radius:50%;border:none;background:#e8f4fd;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#1e3a6e;font-size:15px;" onclick="expOpenEdit(${r.id},'${r.date}','${r.description}','${r.category}','${r.vendor||""}',${r.amount},'${r.status}','${r.type}')"><i class="ri-pencil-line"></i></button>
+            <button style="width:32px;height:32px;border-radius:50%;border:none;background:#fee2e2;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#dc2626;font-size:15px;" onclick="expOpenDelete(${r.id},'${r.description}',${r.amount})"><i class="ri-delete-bin-line"></i></button>
+          </div>
+        </td>
+      </tr>`;
+    }).join("");
+  } catch {
+    tbody.innerHTML = expFallbackSubRows();
+  }
+}
+
+function expFallbackSubRows() {
+  const demo = [
+    { date:"2026-01-02", cat:"Salaries",        desc:"Staff Payroll",                    amt:200000, status:"paid"    },
+    { date:"2026-01-13", cat:"Contractor Fees",  desc:"Tower Installation Contractor",   amt:45000,  status:"unpaid"  },
+    { date:"2026-01-28", cat:"Legal Fees",       desc:"Contract Review - Legal Team",    amt:15000,  status:"pending" },
+  ];
+  return demo.map((r, i) => {
+    const sc = r.status==="paid"?"completed":r.status==="unpaid"?"pending":"progress";
+    return `<tr>
+      <td>${formatDate(r.date)}</td>
+      <td>${r.cat}</td>
+      <td>${r.desc}</td>
+      <td style="font-weight:700;color:#dc2626;">${formatCurrency(r.amt)}</td>
+      <td><span class="badge ${sc}" style="border-radius:20px;padding:5px 14px;">${capitalize(r.status)}</span></td>
+      <td><div style="display:flex;gap:6px;align-items:center;justify-content:center;">
+        <button style="width:32px;height:32px;border-radius:50%;border:none;background:#e8f4fd;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#1e3a6e;font-size:15px;"><i class="ri-pencil-line"></i></button>
+        <button style="width:32px;height:32px;border-radius:50%;border:none;background:#fee2e2;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#dc2626;font-size:15px;"><i class="ri-delete-bin-line"></i></button>
+      </div></td>
+    </tr>`;
+  }).join("");
+}
+
+function expSubSetCat(cat) {
+  expSubFilterCat = cat;
+  document.getElementById("expSubCatBtn").innerHTML = (cat||"All Categories") + ' <i class="ri-arrow-down-s-line"></i>';
+  document.getElementById("expSubCatDd").classList.remove("show");
+  expRenderSubTable();
+}
+function expSubSetStatus(s) {
+  expSubFilterStatus = s;
+  document.getElementById("expSubStsBtn").innerHTML = (s ? capitalize(s) : "All Status") + ' <i class="ri-arrow-down-s-line"></i>';
+  document.getElementById("expSubStsDd").classList.remove("show");
+  expRenderSubTable();
+}
+
+/* ── Add / Edit modal ── */
 function expOpenAdd() {
-  document.getElementById("expModalTitle").textContent = "Add Expense";
-  document.getElementById("expEditId").value = "";
-  document.getElementById("expFDate").value  = new Date().toISOString().split("T")[0];
-  document.getElementById("expFDesc").value  = "";
-  document.getElementById("expFCat").value   = "Supplies";
-  document.getElementById("expFVendor").value = "";
-  document.getElementById("expFAmount").value = "";
-  document.getElementById("expFStatus").value = "completed";
+  const type = expActiveTab === "overview" ? "expenses" : expActiveTab;
+  document.getElementById("expModalTitle").textContent = "Add " + capitalize(type === "expenses" ? "Expense" : type === "purchases" ? "Purchase" : "Overhead");
+  document.getElementById("expEditId").value    = "";
+  document.getElementById("expFType").value     = type;
+  document.getElementById("expFDate").value     = new Date().toISOString().split("T")[0];
+  document.getElementById("expFDesc").value     = "";
+  document.getElementById("expFCat").value      = "";
+  document.getElementById("expFVendor").value   = "";
+  document.getElementById("expFAmount").value   = "";
+  document.getElementById("expFStatus").value   = "paid";
+  expSetModalCategories(type);
   document.getElementById("expModal").style.display = "flex";
 }
-function expOpenEdit(id, date, desc, cat, vendor, amount, status) {
-  document.getElementById("expModalTitle").textContent = "Edit Expense";
-  document.getElementById("expEditId").value  = id;
-  document.getElementById("expFDate").value   = date;
-  document.getElementById("expFDesc").value   = desc;
-  document.getElementById("expFCat").value    = cat;
-  document.getElementById("expFVendor").value = vendor;
-  document.getElementById("expFAmount").value = amount;
-  document.getElementById("expFStatus").value = status;
+function expOpenEdit(id, date, desc, cat, vendor, amount, status, type) {
+  document.getElementById("expModalTitle").textContent = "Edit Record";
+  document.getElementById("expEditId").value    = id;
+  document.getElementById("expFType").value     = type || expActiveTab;
+  document.getElementById("expFDate").value     = date;
+  document.getElementById("expFDesc").value     = desc;
+  document.getElementById("expFVendor").value   = vendor;
+  document.getElementById("expFAmount").value   = amount;
+  document.getElementById("expFStatus").value   = status;
+  expSetModalCategories(type || expActiveTab, cat);
   document.getElementById("expModal").style.display = "flex";
+}
+function expSetModalCategories(type, selected) {
+  const cats = {
+    expenses:  ["Salaries","Contractor Fees","Legal Fees","Utilities","Other"],
+    purchases: ["Equipment","Supplies","Materials","Software","Other"],
+    overhead:  ["Rent","Internet","Insurance","Depreciation","Other"],
+  };
+  const sel = document.getElementById("expFCat");
+  if (!sel) return;
+  sel.innerHTML = (cats[type]||cats.expenses).map(c =>
+    `<option value="${c}" ${c===selected?"selected":""}>${c}</option>`
+  ).join("");
 }
 function expCloseModal() { document.getElementById("expModal").style.display = "none"; }
 async function expSave() {
@@ -819,23 +1348,23 @@ async function expSave() {
   const vendor = document.getElementById("expFVendor").value.trim();
   const amount = parseFloat(document.getElementById("expFAmount").value);
   const status = document.getElementById("expFStatus").value;
+  const type   = document.getElementById("expFType").value;
   const editId = document.getElementById("expEditId").value;
-  if (!date || !desc || !vendor || !amount || isNaN(amount)) {
-    showToast("Please fill in all fields correctly.", "error"); return;
+  if (!date || !desc || !amount || isNaN(amount)) {
+    showToast("Please fill in all required fields.", "error"); return;
   }
   try {
     if (editId) {
-      await api("PUT", `/api/expenses/${editId}`, { date, desc, cat, vendor, amount, status });
-      showToast("Expense updated.", "success");
+      await api("PUT", `/api/expenses/${editId}`, { date, desc, cat, vendor, amount, status, type });
+      showToast("Record updated.", "success");
     } else {
-      await api("POST", `/api/expenses`, { date, desc, cat, vendor, amount, status });
-      showToast("Expense added.", "success");
+      await api("POST", `/api/expenses`, { date, desc, cat, vendor, amount, status, type });
+      showToast("Record added.", "success");
     }
     expCloseModal();
-    expRenderTable();
-  } catch (err) {
-    showToast("Save failed: " + err.message, "error");
-  }
+    if (expActiveTab === "overview") expLoadOverview();
+    else { expRenderSubTable(); expLoadSubKpis(); }
+  } catch (err) { showToast("Save failed: " + err.message, "error"); }
 }
 function expOpenDelete(id, desc, amount) {
   expDeleteId = id;
@@ -847,11 +1376,10 @@ async function expConfirmDelete() {
   try {
     await api("DELETE", `/api/expenses/${expDeleteId}`);
     expCloseDelete();
-    expRenderTable();
-    showToast("Expense deleted.", "info");
-  } catch (err) {
-    showToast("Delete failed: " + err.message, "error");
-  }
+    if (expActiveTab === "overview") expLoadOverview();
+    else { expRenderSubTable(); expLoadSubKpis(); }
+    showToast("Record deleted.", "info");
+  } catch (err) { showToast("Delete failed: " + err.message, "error"); }
 }
 
 /* ================= PROJECT EXPENSES ================= */
@@ -1316,6 +1844,321 @@ function loadSettings() {
     </div>`;
 }
 
+/* ================= EMPLOYEE ================= */
+
+let empActiveTab = "reimburse";
+
+function loadEmployee() {
+  empActiveTab = "reimburse";
+
+  mainContent.innerHTML = `
+  <div style="background:#f0f4fa;min-height:100%;">
+
+    <!-- Header -->
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:28px 32px 16px;flex-wrap:wrap;gap:12px;">
+      <h2 style="font-size:26px;font-weight:800;color:#1e3a6e;margin:0;">Employee</h2>
+      <div class="search-box" style="max-width:400px;flex:1;">
+        <i class="ri-search-line"></i>
+        <input type="text" id="empSearch" placeholder="Search here" style="width:100%;">
+      </div>
+    </div>
+
+    <!-- Tabs row -->
+    <div style="padding:0 32px 16px;">
+      <div style="display:inline-flex;background:white;border-radius:12px;padding:5px;gap:3px;box-shadow:0 2px 12px rgba(0,0,0,0.08);">
+        <button class="exp-tab active" id="empTabRmb" onclick="empSwitchTab('reimburse')">Reimburse</button>
+        <button class="exp-tab"        id="empTabBdg" onclick="empSwitchTab('budget')">Request of Budget</button>
+        <button class="exp-tab"        id="empTabSal" onclick="empSwitchTab('salary')">Salary Advancement</button>
+      </div>
+    </div>
+
+    <!-- Add/Edit row — Salary only -->
+    <div id="empActionRow" style="display:none;justify-content:flex-end;gap:10px;padding:0 32px 12px;">
+      <button onclick="empOpenAdd()"
+        style="display:inline-flex;align-items:center;gap:7px;padding:10px 22px;border-radius:8px;border:none;background:linear-gradient(135deg,#1e3a6e,#2d5fa8);color:white;font-size:13px;font-weight:700;font-family:inherit;cursor:pointer;box-shadow:0 4px 14px rgba(30,58,110,.35);">
+        <i class="ri-add-line"></i> Add
+      </button>
+
+    </div>
+
+    <!-- Table card -->
+    <div style="padding:0 32px 32px;">
+      <div style="background:white;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
+        <div id="empBanner"
+          style="background:linear-gradient(135deg,#1a3460,#1e3a6e,#2a52a0);color:white;text-align:center;
+                 font-size:16px;font-weight:700;padding:18px 24px;letter-spacing:1px;">
+          Employee Reimburse
+        </div>
+        <div style="overflow-x:auto;">
+          <table style="width:100%;border-collapse:collapse;">
+            <thead>
+              <tr id="empThead" style="background:linear-gradient(90deg,rgba(184,212,236,.6),rgba(184,212,236,.3));"></tr>
+            </thead>
+            <tbody id="empTbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </div>`;
+
+  document.getElementById("empSearch").addEventListener("input", empRefresh);
+  empSwitchTab("reimburse");
+}
+
+/* ── tab switch ── */
+function empSwitchTab(tab) {
+  empActiveTab = tab;
+  ["Rmb","Bdg","Sal"].forEach(t => {
+    const b = document.getElementById("empTab"+t); if (b) b.classList.remove("active");
+  });
+  const map = { reimburse:"Rmb", budget:"Bdg", salary:"Sal" };
+  const ab = document.getElementById("empTab"+map[tab]); if (ab) ab.classList.add("active");
+
+  // Show action row only for Salary tab
+  const ar = document.getElementById("empActionRow");
+  if (ar) ar.style.display = tab === "salary" ? "flex" : "none";
+
+  // Banner title
+  const banners = { reimburse:"Employee Reimburse", budget:"Requests", salary:"Salary Advances" };
+  const bn = document.getElementById("empBanner"); if (bn) bn.textContent = banners[tab]||"";
+
+  // Table headers
+  const heads = {
+    reimburse: ["Name","Roles","Date","Description","Amount","Status","Action","Comments"],
+    budget:    ["Name","Roles","Date","Description","Amount","Status","Action","Comments"],
+    salary:    ["Name","Amount","Balance","Date","Status","Actions"],
+  };
+  const tr = document.getElementById("empThead");
+  if (tr) tr.innerHTML = (heads[tab]||[]).map(h =>
+    `<th style="padding:14px 20px;text-align:center;font-size:13px;font-weight:700;color:#1e3a6e;">${h}</th>`
+  ).join("");
+
+  empRefresh();
+}
+
+/* ── render table ── */
+async function empRefresh() {
+  const tbody = document.getElementById("empTbody"); if (!tbody) return;
+  const q = (document.getElementById("empSearch")?.value||"").trim();
+  tbody.innerHTML = empLoadingRow();
+
+  try {
+    if (empActiveTab === "reimburse") {
+      const rows = await api("GET", `/api/employee/reimburse?search=${encodeURIComponent(q)}`);
+      tbody.innerHTML = rows.map(r => {
+        const bg = r.status==="Done"||r.status==="Approved" ? "#16a34a"
+                 : r.status==="Decline" ? "#ef4444" : "#f59e0b";
+        return `<tr style="border-bottom:1px solid #eef2f8;transition:background .15s;" onmouseover="this.style.background='#f8faff'" onmouseout="this.style.background=''">
+          <td style="padding:16px 20px;text-align:center;">${r.employee_name}</td>
+          <td style="padding:16px 20px;text-align:center;"><span style="background:#e8f0fe;color:#1e3a6e;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:600;">${r.role}</span></td>
+          <td style="padding:16px 20px;text-align:center;">${empFmtDate(r.request_date)}</td>
+          <td style="padding:16px 20px;text-align:center;">${r.description}</td>
+          <td style="padding:16px 20px;text-align:center;font-weight:700;">&#8369;${Number(r.amount).toLocaleString("en-PH",{minimumFractionDigits:2})}</td>
+          <td style="padding:16px 20px;text-align:center;">
+            <span style="background:${bg};color:white;padding:5px 16px;border-radius:20px;font-size:12.5px;font-weight:700;">${r.status||"Pending"}</span>
+          </td>
+          <!-- ACTION column: always shows the action button -->
+          <td style="padding:16px 20px;text-align:center;">
+            <button onclick="empOpenAction('reimburse','${r.id}','${r.employee_name.replace(/'/g,"&apos;")}','${(r.comment||"").replace(/'/g,"&apos;")}')"
+              style="display:inline-flex;align-items:center;gap:5px;padding:7px 16px;background:linear-gradient(135deg,#1e3a6e,#2d5fa8);color:white;border:none;border-radius:20px;font-size:12.5px;font-weight:700;cursor:pointer;">
+              <i class="ri-check-line"></i> Action
+            </button>
+          </td>
+          <!-- COMMENTS column: always shows comment text (empty dash if none) -->
+          <td style="padding:16px 20px;text-align:center;color:#374151;font-size:13px;max-width:180px;word-break:break-word;">
+            ${r.comment ? `<span>${r.comment}</span>` : '<span style="color:#9ca3af;">—</span>'}
+          </td>
+        </tr>`;
+      }).join("") + empEmptyRows(rows.length, 8, 6);
+
+    } else if (empActiveTab === "budget") {
+      const rows = await api("GET", `/api/employee/budget?search=${encodeURIComponent(q)}`);
+      tbody.innerHTML = rows.map(r => {
+        const bg = r.status==="Done"||r.status==="Approved" ? "#16a34a"
+                 : r.status==="Decline" ? "#ef4444" : "#f59e0b";
+        return `<tr style="border-bottom:1px solid #eef2f8;transition:background .15s;" onmouseover="this.style.background='#f8faff'" onmouseout="this.style.background=''">
+          <td style="padding:16px 20px;text-align:center;">${r.employee_name}</td>
+          <td style="padding:16px 20px;text-align:center;"><span style="background:#e8f0fe;color:#1e3a6e;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:600;">${r.role}</span></td>
+          <td style="padding:16px 20px;text-align:center;">${empFmtDate(r.request_date)}</td>
+          <td style="padding:16px 20px;text-align:center;">${r.description}</td>
+          <td style="padding:16px 20px;text-align:center;font-weight:700;">&#8369;${Number(r.amount).toLocaleString("en-PH",{minimumFractionDigits:2})}</td>
+          <td style="padding:16px 20px;text-align:center;">
+            <span style="background:${bg};color:white;padding:5px 16px;border-radius:20px;font-size:12.5px;font-weight:700;">${r.status||"Pending"}</span>
+          </td>
+          <!-- ACTION column: always shows the action button -->
+          <td style="padding:16px 20px;text-align:center;">
+            <button onclick="empOpenAction('budget','${r.id}','${r.employee_name.replace(/'/g,"&apos;")}','${(r.comment||"").replace(/'/g,"&apos;")}')"
+              style="display:inline-flex;align-items:center;gap:5px;padding:7px 16px;background:linear-gradient(135deg,#1e3a6e,#2d5fa8);color:white;border:none;border-radius:20px;font-size:12.5px;font-weight:700;cursor:pointer;">
+              <i class="ri-check-line"></i> Action
+            </button>
+          </td>
+          <!-- COMMENTS column: always shows comment text (empty dash if none) -->
+          <td style="padding:16px 20px;text-align:center;color:#374151;font-size:13px;max-width:180px;word-break:break-word;">
+            ${r.comment ? `<span>${r.comment}</span>` : '<span style="color:#9ca3af;">—</span>'}
+          </td>
+        </tr>`;
+      }).join("") + empEmptyRows(rows.length, 8, 4);
+
+    } else if (empActiveTab === "salary") {
+      const rows = await api("GET", `/api/employee/salary?search=${encodeURIComponent(q)}`);
+      tbody.innerHTML = rows.map(r => {
+        const isApp = r.status==="Approved", isDec = r.status==="Decline";
+        const bg  = isApp ? "#16a34a" : isDec ? "#ef4444" : "#f59e0b";
+        const ico = isApp ? "&#10003; " : isDec ? "&#10005; " : "";
+        return `<tr style="border-bottom:1px solid #eef2f8;transition:background .15s;" onmouseover="this.style.background='#f8faff'" onmouseout="this.style.background=''">
+          <td style="padding:16px 20px;text-align:center;">${r.employee_name}</td>
+          <td style="padding:16px 20px;text-align:center;font-weight:700;">&#8369;${Number(r.advance_amount).toLocaleString("en-PH",{minimumFractionDigits:0})}</td>
+          <td style="padding:16px 20px;text-align:center;font-weight:700;">&#8369;${Number(r.balance).toLocaleString("en-PH",{minimumFractionDigits:0})}</td>
+          <td style="padding:16px 20px;text-align:center;">${empFmtDate(r.advance_date)}</td>
+          <td style="padding:16px 20px;text-align:center;">
+            <span style="background:${bg};color:white;padding:5px 16px;border-radius:20px;font-size:12.5px;font-weight:700;">${ico}${r.status}</span>
+          </td>
+          <!-- ACTIONS column: edit + delete icon buttons -->
+          <td style="padding:16px 20px;text-align:center;">
+            <div style="display:flex;gap:8px;justify-content:center;align-items:center;">
+              <button onclick="empOpenEditSal('${r.id}')"
+                style="width:34px;height:34px;border-radius:50%;border:none;background:#e8f4fd;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#1e3a6e;font-size:15px;" title="Edit">
+                <i class="ri-pencil-line"></i>
+              </button>
+              <button onclick="empOpenDeleteSal('${r.id}','${r.employee_name.replace(/'/g,"&apos;")}')"
+                style="width:34px;height:34px;border-radius:50%;border:none;background:#fee2e2;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#dc2626;font-size:15px;" title="Delete">
+                <i class="ri-delete-bin-line"></i>
+              </button>
+            </div>
+          </td>
+        </tr>`;
+      }).join("") + empEmptyRows(rows.length, 6, 4);
+    }
+  } catch(err) {
+    const cols = {reimburse:8,budget:8,salary:6}[empActiveTab]||8;
+    tbody.innerHTML = `<tr><td colspan="${cols}" style="text-align:center;padding:40px;color:#dc2626;">Error loading data.</td></tr>`;
+  }
+}
+
+function empLoadingRow() {
+  const cols = {reimburse:8,budget:8,salary:6}[empActiveTab]||8;
+  return `<tr><td colspan="${cols}" style="text-align:center;padding:40px;color:#9ca3af;">Loading...</td></tr>`;
+}
+
+function empEmptyRows(count, cols, total) {
+  const n = Math.max(0, total - count);
+  return Array(n).fill(0).map(() =>
+    `<tr style="border-bottom:1px solid #eef2f8;">${Array(cols).fill(`<td style="padding:22px 20px;"></td>`).join("")}</tr>`
+  ).join("");
+}
+
+function empFmtDate(d) {
+  if (!d) return "—";
+  const dt = new Date(d);
+  const m = String(dt.getMonth()+1).padStart(2,"0");
+  const day = String(dt.getDate()).padStart(2,"0");
+  return `${m}/${day}/${dt.getFullYear()}`;
+}
+
+/* ── Action modal (Reimburse & Budget: Approve/Decline + optional comment) ── */
+let empActionId   = null;
+let empActionType = null;
+
+function empOpenAction(type, id, name, existingComment) {
+  empActionId   = id;
+  empActionType = type;
+  document.getElementById("empActionName").textContent    = name;
+  document.getElementById("empActionComment").value       = existingComment || "";
+  document.getElementById("empActionModal").style.display = "flex";
+}
+function empCloseAction() {
+  document.getElementById("empActionModal").style.display = "none";
+  empActionId = empActionType = null;
+}
+async function empDoAction(status) {
+  const comment = document.getElementById("empActionComment").value.trim();
+  const url = `/api/employee/${empActionType}/${empActionId}/action`;
+  try {
+    await api("PATCH", url, { status, comment: comment || null });
+    showToast(`Marked as ${status}.`, status==="Approved"||status==="Done" ? "success" : "info");
+    empCloseAction();
+    empRefresh();
+  } catch(err) { showToast("Failed: " + err.message, "error"); }
+}
+
+/* ── Salary Add / Edit / Delete ── */
+let empSalEditId   = null;
+let empSalDeleteId = null;
+
+function empOpenDeleteSal(id, name) {
+  empSalDeleteId = id;
+  document.getElementById("empSalDeleteName").textContent  = name;
+  document.getElementById("empSalDeleteModal").style.display = "flex";
+}
+function empCloseSalDelete() {
+  document.getElementById("empSalDeleteModal").style.display = "none";
+  empSalDeleteId = null;
+}
+async function empConfirmSalDelete() {
+  try {
+    await api("DELETE", `/api/employee/salary/${empSalDeleteId}`);
+    showToast("Record deleted.", "info");
+    empCloseSalDelete();
+    empRefresh();
+  } catch(err) { showToast("Delete failed: " + err.message, "error"); }
+}
+
+function empOpenAdd() {
+  empSalEditId = null;
+  document.getElementById("empSalModalTitle").textContent = "Add Salary Advance";
+  document.getElementById("empSalName").value    = "";
+  document.getElementById("empSalAmount").value  = "";
+  document.getElementById("empSalBalance").value = "";
+  document.getElementById("empSalDate").value    = new Date().toISOString().slice(0,10);
+  document.getElementById("empSalStatus").value  = "Pending";
+  document.getElementById("empSalModal").style.display = "flex";
+}
+
+function empOpenEdit() {
+  showToast("Double-click a row to edit.", "info");
+}
+
+function empOpenEditSal(id) {
+  empSalEditId = id;
+  api("GET", `/api/employee/salary/${id}`).then(r => {
+    document.getElementById("empSalModalTitle").textContent = "Edit Salary Advance";
+    document.getElementById("empSalName").value    = r.employee_name   || "";
+    document.getElementById("empSalAmount").value  = r.advance_amount  || "";
+    document.getElementById("empSalBalance").value = r.balance         || "";
+    document.getElementById("empSalDate").value    = r.advance_date ? r.advance_date.toString().slice(0,10) : "";
+    document.getElementById("empSalStatus").value  = r.status || "Pending";
+    document.getElementById("empSalModal").style.display = "flex";
+  }).catch(() => showToast("Could not load record.", "error"));
+}
+
+function empCloseSal() {
+  document.getElementById("empSalModal").style.display = "none";
+  empSalEditId = null;
+}
+
+async function empSaveSal() {
+  const body = {
+    employee_name:  document.getElementById("empSalName").value.trim(),
+    advance_amount: parseFloat(document.getElementById("empSalAmount").value),
+    balance:        parseFloat(document.getElementById("empSalBalance").value),
+    advance_date:   document.getElementById("empSalDate").value,
+    status:         document.getElementById("empSalStatus").value,
+  };
+  if (!body.employee_name || isNaN(body.advance_amount) || !body.advance_date) {
+    showToast("Fill in all required fields.", "error"); return;
+  }
+  try {
+    if (empSalEditId) await api("PUT",  `/api/employee/salary/${empSalEditId}`, body);
+    else               await api("POST", `/api/employee/salary`, body);
+    showToast(empSalEditId ? "Record updated." : "Salary advance added.", "success");
+    empCloseSal();
+    empRefresh();
+  } catch(err) { showToast("Save failed: " + err.message, "error"); }
+}
+
+
+
 /* ================= SHARED UI BUILDERS ================= */
 
 function buildPageShell({ icon, title, subtitle, addBtnLabel, addBtnId, tableHeaders, tableBodyId }) {
@@ -1434,20 +2277,21 @@ loadDashboard();
     <div class="inc-modal-box">
       <h3 id="expModalTitle">Add Expense</h3>
       <input type="hidden" id="expEditId">
+      <input type="hidden" id="expFType" value="expenses">
       <div class="inc-fg"><label>Date</label><input type="date" id="expFDate"></div>
-      <div class="inc-fg"><label>Description</label><input type="text" id="expFDesc" placeholder="e.g. Office Supplies"></div>
+      <div class="inc-fg"><label>Description</label><input type="text" id="expFDesc" placeholder="e.g. Staff Payroll"></div>
       <div class="inc-fg"><label>Category</label>
         <select id="expFCat">
-          <option>Supplies</option><option>Utilities</option><option>Equipment</option>
-          <option>Labor</option><option>Logistics</option><option>Other</option>
+          <option>Salaries</option><option>Contractor Fees</option><option>Legal Fees</option>
+          <option>Utilities</option><option>Other</option>
         </select>
       </div>
-      <div class="inc-fg"><label>Supplier / Vendor</label><input type="text" id="expFVendor" placeholder="e.g. MERALCO"></div>
+      <div class="inc-fg"><label>Supplier / Vendor <span style="color:#9ca3af;font-weight:400;">(optional)</span></label><input type="text" id="expFVendor" placeholder="e.g. MERALCO"></div>
       <div class="inc-fg"><label>Amount (₱)</label><input type="number" id="expFAmount" placeholder="e.g. 15000" min="1"></div>
       <div class="inc-fg"><label>Status</label>
         <select id="expFStatus">
-          <option value="completed">Completed</option>
-          <option value="progress">In Progress</option>
+          <option value="paid">Paid</option>
+          <option value="unpaid">Unpaid</option>
           <option value="pending">Pending</option>
         </select>
       </div>
@@ -1543,6 +2387,81 @@ loadDashboard();
       </div>
     </div>
   </div>
+
+  <!-- EMPLOYEE: Action Modal (Approve / Decline + optional comment) -->
+  <div class="inc-modal-overlay" id="empActionModal">
+    <div class="inc-modal-box" style="max-width:420px;">
+      <h3 style="color:#1e3a6e;"><i class="ri-shield-check-line"></i> Finance Action</h3>
+      <p style="font-size:13.5px;color:#374151;margin-bottom:16px;">
+        Employee: <strong id="empActionName"></strong>
+      </p>
+      <div class="inc-fg">
+        <label>Comment <span style="color:#9ca3af;font-weight:400;">(optional)</span></label>
+        <textarea id="empActionComment" rows="3"
+          placeholder="Add a remark..."
+          style="width:100%;padding:10px 14px;border-radius:10px;border:1px solid #d1d5db;
+                 font-size:14px;resize:vertical;font-family:inherit;outline:none;"></textarea>
+      </div>
+      <div class="inc-mbtns" style="justify-content:space-between;">
+        <button class="inc-mbtn" onclick="empCloseAction()">
+          <i class="ri-close-line"></i> Cancel
+        </button>
+        <div style="display:flex;gap:8px;">
+          <button class="inc-mbtn" onclick="empDoAction('Decline')"
+            style="background:#ef4444;border-color:#ef4444;color:white;">
+            <i class="ri-close-circle-line"></i> Decline
+          </button>
+          <button class="inc-mbtn inc-mbtn-save" onclick="empDoAction('Approved')">
+            <i class="ri-check-line"></i> Approve
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- EMPLOYEE: Salary Delete Confirm Modal -->
+  <div class="inc-modal-overlay" id="empSalDeleteModal">
+    <div class="inc-modal-box" style="max-width:380px;">
+      <h3 style="color:#dc2626;"><i class="ri-delete-bin-line"></i> Delete Salary Advance</h3>
+      <p style="font-size:14px;color:#374151;margin-bottom:8px;">Are you sure you want to delete this record?</p>
+      <p id="empSalDeleteName" style="font-size:13px;color:#6b7280;background:#f8fafc;padding:10px 14px;border-radius:9px;font-weight:600;"></p>
+      <div class="inc-mbtns">
+        <button class="inc-mbtn" onclick="empCloseSalDelete()"><i class="ri-close-line"></i> Cancel</button>
+        <button class="inc-mbtn inc-mbtn-del" onclick="empConfirmSalDelete()"><i class="ri-delete-bin-line"></i> Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- EMPLOYEE: Salary Add/Edit Modal -->
+  <div class="inc-modal-overlay" id="empSalModal">
+    <div class="inc-modal-box" style="max-width:420px;">
+      <h3 id="empSalModalTitle"><i class="ri-money-dollar-circle-line"></i> Add Salary Advance</h3>
+      <div class="inc-fg"><label>Employee Name</label>
+        <input type="text" id="empSalName" placeholder="e.g. Arianne Mendiola">
+      </div>
+      <div class="inc-fg"><label>Advance Amount (&#8369;)</label>
+        <input type="number" id="empSalAmount" placeholder="e.g. 5000" min="1">
+      </div>
+      <div class="inc-fg"><label>Balance (&#8369;)</label>
+        <input type="number" id="empSalBalance" placeholder="e.g. 13000" min="0">
+      </div>
+      <div class="inc-fg"><label>Date</label>
+        <input type="date" id="empSalDate">
+      </div>
+      <div class="inc-fg"><label>Status</label>
+        <select id="empSalStatus">
+          <option value="Pending">Pending</option>
+          <option value="Approved">Approved</option>
+          <option value="Decline">Decline</option>
+        </select>
+      </div>
+      <div class="inc-mbtns">
+        <button class="inc-mbtn" onclick="empCloseSal()"><i class="ri-close-line"></i> Cancel</button>
+        <button class="inc-mbtn inc-mbtn-save" onclick="empSaveSal()"><i class="ri-save-line"></i> Save</button>
+      </div>
+    </div>
+  </div>
+
 `;
   document.body.insertAdjacentHTML("beforeend", extraModals);
 })();
